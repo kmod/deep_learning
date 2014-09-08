@@ -73,8 +73,8 @@ class CropLayer(object):
     def fprop(self, data):
         return data[:self.R,:self.C]
 
-    def bprop(self, data, grad, scale):
-        return None
+    def bprop(self, data, grad, scale, label):
+        return None, 0.0
 
 class SimpleLinear(object):
     def __init__(self, R, C):
@@ -87,36 +87,28 @@ class SimpleLinear(object):
     def fprop(self, data):
         return (self.weights * data).sum() + self.bias
 
-    def bprop(self, data, grad, scale):
+    def bprop(self, data, grad, scale, label):
         assert isinstance(grad, float)
-        self.weights -= scale * (data * grad + 0.01 * self.weights)
+
+        u = 0.1
+        self.weights -= scale * (data * grad + 2 * u * self.weights)
         self.bias -= scale * grad
-        return self.weights * grad
-
-class SimpleErrorMeasure(object):
-    def __init__(self):
-        self._expected = None
-
-    def setExpected(self, expected):
-        self._expected = expected
-
-    def fprop(self, data):
-        if self._expected == 'h':
-            return (1.0 - data) ** 2
-        return (-1.0 - data) ** 2
-
-    def bprop(self, data, grad, scale):
-        if self._expected == 'h':
-            return 2 * (data - 1)
-        return 2 * (data + 1)
+        return self.weights * grad, (u * self.weights ** 2).sum()
 
 class SimpleClassPicker(object):
     def fprop(self, data):
         return data
         assert isinstance(data, float), data
+        if -0.5 < data < 0.5:
+            return "unknown"
         if data > 0:
             return 'h'
         return 'v'
+
+    def bprop(self, data, grad, scale, label):
+        if label == 'h':
+            return 2 * (data - 1), (data - 1) ** 2
+        return 2 * (data + 1), (data + 1) ** 2
 
 class Classifier(object):
     def __init__(self):
@@ -124,31 +116,28 @@ class Classifier(object):
 
         self.layers.append(CropLayer(4, 4))
         self.layers.append(SimpleLinear(4, 4))
+        self.layers.append(SimpleClassPicker())
 
-    def _update(self, layers, t):
-        data = t
+    def _update(self, t):
+        data = t.data
 
         datas = [data]
-        for l in layers:
+        for l in self.layers:
             data = l.fprop(data)
             datas.append(data)
 
         assert isinstance(data, float)
-        err = data
+        total_err = 0.0
         # print err
 
         grad = 1.0
-        gradients = [grad]
-        for i, l in reversed(list(enumerate(layers))):
-            # print "going into %r, grad is %r" % (l, grad)
-            grad = l.bprop(datas[i], grad, 0.001)
+        for i, l in reversed(list(enumerate(self.layers))):
+            grad, err = l.bprop(datas[i], grad, 0.001, t.label)
+            total_err += err
 
-        return err
+        return total_err
 
     def train(self, training_set):
-        error_measure = SimpleErrorMeasure()
-        layers = self.layers + [error_measure]
-
         training_set = list(training_set)
 
         last = []
@@ -160,9 +149,7 @@ class Classifier(object):
 
             for t in training_set:
                 # print t.label
-                error_measure.setExpected(t.label)
-
-                total_err += self._update(layers, t.data)
+                total_err += self._update(t)
 
             total_err /= len(training_set)
             print total_err
